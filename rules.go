@@ -6,8 +6,9 @@
 package yara
 
 /*
-#include <yara.h>
 
+#cgo CFLAGS:  -I../yara/libyara/include
+#include <yara.h>
 #ifdef _WIN32
 int _yr_rules_scan_fd(
     YR_RULES* rules,

@@ -1,0 +1,12 @@
+*.tlog
+/yara/windows/yarac/Release
+/yara/windows/yarac/Debug
+*.user
+/yara/windows/yara/Release
+/yara/windows/yara/Debug
+/yara/windows/libyara
+*.suo
+*.ipch
+*.opensdf
+*.sdf
+*.bak
