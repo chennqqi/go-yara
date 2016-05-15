@@ -13,6 +13,9 @@
 *.Tpo
 *.m4
 *.dSYM
+*.obj
+*.o
+*.bak
 .deps
 .libs
 INSTALL
