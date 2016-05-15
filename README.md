@@ -61,3 +61,7 @@ BSD 2-clause, see LICENSE file in the source distribution.
 ## Author
 
 Hilko Bengen <bengen@hilluzination.de>
+
+
+## ChenQ
+windows下使用动态库；需要将libyara32拷贝到运行目录下
