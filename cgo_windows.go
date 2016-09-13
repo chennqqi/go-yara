@@ -4,5 +4,5 @@
 // +build windows
 package yara
 
-//#cgo LDFLAGS: -Lyara/windows/libyara/Release -llibyara32
+//#cgo LDFLAGS: -Lyara/windows/libyara/Release -L../yara/windows/libyara/Release -llibyara32
 import "C"

@@ -64,7 +64,7 @@ import (
 // Only return Boolean, int64, float64, and string
 func (r *Rules) ReadStandaloneVariable(name string) (value interface{}, err error) {
 	cname := C.CString(name)
-	C.free(unsafe.Pointer(cname))
+	defer C.free(unsafe.Pointer(cname))
 
 	var i64 C.int64_t
 	var d64 C.double
@@ -78,9 +78,9 @@ func (r *Rules) ReadStandaloneVariable(name string) (value interface{}, err erro
 		return e, errors.New("NOT FOUND")
 
 	case 1:
-		return i64, nil
+		return int64(i64), nil
 	case 2:
-		return d64, nil
+		return float64(d64), nil
 	case 3:
 		return C.GoString(pstr), nil
 
