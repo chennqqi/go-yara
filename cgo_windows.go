@@ -4,6 +4,21 @@
 // +build windows
 package yara
 
-// #cgo LDFLAGS: -lyara
+//#cgo LDFLAGS: -lyara
+
+/*
+size_t strnlen(const char* pStr, size_t maxcount)
+{
+	size_t idx = 0;
+	for (idx=0; idx<maxcount; idx++)
+	{
+		if (pStr[idx]=='\0')
+		{
+			return idx;
+		}
+	}
+	return maxcount;
+}
+*/
 
 import "C"
