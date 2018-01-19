@@ -1,5 +1,7 @@
 /*
-  Copyright © 2015 Hilko Bengen <bengen@hilluzination.de>. All rights reserved.
+  Copyright © 2015-2017 Hilko Bengen <bengen@hilluzination.de>
+  All rights reserved.
+
   Use of this source code is governed by the license that can be
   found in the LICENSE file.
 */
@@ -7,7 +9,7 @@
 #include <yara.h>
 #include "_cgo_export.h"
 
-int rules_callback(int message, void *message_data, void *user_data) {
+int stdScanCallback(int message, void *message_data, void *user_data) {
   if (message == CALLBACK_MSG_RULE_MATCHING) {
     YR_RULE* rule = (YR_RULE*) message_data;
     char* ns = rule->ns->name;
@@ -39,7 +41,7 @@ int rules_callback(int message, void *message_data, void *user_data) {
       yr_string_matches_foreach(string, m) {
 #if YR_VERSION_HEX >= 0x030500
         /* YR_MATCH members have been renamed in YARA 3.5 */
-        addString(user_data, string->identifier, m->offset, m->data, (int)m->data_length);
+        addString(user_data, string->identifier, m->offset, (char*)m->data, (int)m->data_length);
 #else
         addString(user_data, string->identifier, m->offset, m->data, (int)m->length);
 #endif

@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"os"
 	"os/exec"
+	"reflect"
 	"testing"
 )
 
@@ -148,8 +149,7 @@ func TestWriterBuffer(t *testing.T) {
 	r, _ := Compile(string(rulesBuf.Bytes()), nil)
 	buf := new(bytes.Buffer)
 	if err := r.Write(buf); err != nil {
-		t.Errorf("write to bytes.Buffer: %s", err)
-		return
+		t.Fatalf("write to bytes.Buffer: %s", err)
 	}
 }
 
@@ -160,27 +160,26 @@ func TestReaderBZIP2(t *testing.T) {
 	for i := 0; i < 10000; i++ {
 		fmt.Fprintf(rulesBuf, "rule test%d : tag%d { meta: author = \"Hilko Bengen\" strings: $a = \"abc\" fullword condition: $a }", i, i)
 	}
-	r, _ := Compile(string(rulesBuf.Bytes()), nil)
+	r, err := Compile(string(rulesBuf.Bytes()), nil)
+	if err != nil {
+		t.Fatalf("compile text for bzip2 rule compression: %s", err)
+	}
 	cmd := exec.Command("bzip2", "-c")
 	compressStream, _ := cmd.StdinPipe()
 	buf := bytes.NewBuffer(nil)
 	cmd.Stdout = buf
 	if err := cmd.Start(); err != nil {
-		t.Errorf("start bzip2 process: %s", err)
-		return
+		t.Fatalf("start bzip2 process: %s", err)
 	}
 	if err := r.Write(compressStream); err != nil {
-		t.Errorf("pipe to bzip2 process: %s", err)
-		return
+		t.Fatalf("pipe to bzip2 process: %s", err)
 	}
 	compressStream.Close()
 	if err := cmd.Wait(); err != nil {
-		t.Errorf("wait for bzip2 process: %s", err)
-		return
+		t.Fatalf("wait for bzip2 process: %s", err)
 	}
 	if _, err := ReadRules(bzip2.NewReader(bytes.NewReader(buf.Bytes()))); err != nil {
-		t.Errorf("read using compress/bzip2: %s", err)
-		return
+		t.Fatalf("read using compress/bzip2: %s", err)
 	}
 }
 
@@ -196,5 +195,48 @@ func TestScanMemCgoPointer(t *testing.T) {
 		return nil
 	}(); err != nil {
 		t.Errorf("ScanMem panicked: %s", err)
+	}
+}
+
+func TestRule(t *testing.T) {
+	r := makeRules(t, `
+		rule t1 : tag1 { meta: author = "Author One" strings: $a = "abc" fullword condition: $a }
+        rule t2 : tag2 x y { meta: author = "Author Two" strings: $b = "def" condition: $b }
+        rule t3 : tag3 x y z { meta: author = "Author Three" strings: $c = "ghi" condition: $c }
+		rule t4 { strings: $d = "qwe" condition: $d }`)
+	for _, r := range r.GetRules() {
+		t.Logf("%s:%s %#v", r.Namespace(), r.Identifier(), r.Tags())
+		switch r.Identifier() {
+		case "t1":
+			if !reflect.DeepEqual(r.Tags(), []string{"tag1"}) {
+				t.Error("Got wrong tags for t1")
+			}
+			if !reflect.DeepEqual(r.Metas(), map[string]interface{}{"author": "Author One"}) {
+				t.Error("Got wrong meta variables for t1")
+			}
+		case "t2":
+			if !reflect.DeepEqual(r.Tags(), []string{"tag2", "x", "y"}) {
+				t.Error("Got wrong tags for t2")
+			}
+			if !reflect.DeepEqual(r.Metas(), map[string]interface{}{"author": "Author Two"}) {
+				t.Error("Got wrong meta variables for t2")
+			}
+		case "t3":
+			if !reflect.DeepEqual(r.Tags(), []string{"tag3", "x", "y", "z"}) {
+				t.Error("Got wrong tags for t3")
+			}
+			if !reflect.DeepEqual(r.Metas(), map[string]interface{}{"author": "Author Three"}) {
+				t.Error("Got wrong meta variables for t3")
+			}
+		case "t4":
+			if len(r.Tags()) != 0 {
+				t.Error("Got tags for t4")
+			}
+			if !reflect.DeepEqual(r.Metas(), map[string]interface{}{}) {
+				t.Error("Got wrong meta variables for t4")
+			}
+		default:
+			t.Errorf("Found unexpected rule name: %#v", r.Identifier())
+		}
 	}
 }

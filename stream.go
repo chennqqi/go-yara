@@ -1,4 +1,6 @@
-// Copyright © 2015 Hilko Bengen <bengen@hilluzination.de>. All rights reserved.
+// Copyright © 2015-2017 Hilko Bengen <bengen@hilluzination.de>
+// All rights reserved.
+//
 // Use of this source code is governed by the license that can be
 // found in the LICENSE file.
 
@@ -33,6 +35,7 @@ func streamRead(ptr unsafe.Pointer, size, nmemb C.size_t, userData unsafe.Pointe
 	return nmemb
 }
 
+// writeFull does its best to write all of buf to w. See io.ReadFull.
 func writeFull(w io.Writer, buf []byte) (n int, err error) {
 	var i int
 	for n < len(buf) {

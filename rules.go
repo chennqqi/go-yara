@@ -1,4 +1,6 @@
-// Copyright © 2015 Hilko Bengen <bengen@hilluzination.de>. All rights reserved.
+// Copyright © 2015-2017 Hilko Bengen <bengen@hilluzination.de>
+// All rights reserved.
+//
 // Use of this source code is governed by the license that can be
 // found in the LICENSE file.
 
@@ -6,10 +8,9 @@
 package yara
 
 /*
-
-#cgo CFLAGS:  -I../yara/libyara/include
 #include <yara.h>
-int rules_callback(int message, void *message_data, void *user_data);
+
+int stdScanCallback(int, void*, void*);
 */
 import "C"
 import (
@@ -54,8 +55,7 @@ func init() {
 
 //export newMatch
 func newMatch(userData unsafe.Pointer, namespace, identifier *C.char) {
-
-	matches := callbackData.Get(uintptr(userData)).(*[]MatchRule)
+	matches := callbackData.Get(*(*uintptr)(userData)).(*[]MatchRule)
 	*matches = append(*matches, MatchRule{
 		Rule:      C.GoString(identifier),
 		Namespace: C.GoString(namespace),
@@ -67,38 +67,34 @@ func newMatch(userData unsafe.Pointer, namespace, identifier *C.char) {
 
 //export addMetaInt
 func addMetaInt(userData unsafe.Pointer, identifier *C.char, value C.int) {
-
-	matches := callbackData.Get(uintptr(userData)).(*[]MatchRule)
+	matches := callbackData.Get(*(*uintptr)(userData)).(*[]MatchRule)
 	i := len(*matches) - 1
 	(*matches)[i].Meta[C.GoString(identifier)] = int32(value)
 }
 
 //export addMetaString
 func addMetaString(userData unsafe.Pointer, identifier *C.char, value *C.char) {
-
-	matches := callbackData.Get(uintptr(userData)).(*[]MatchRule)
+	matches := callbackData.Get(*(*uintptr)(userData)).(*[]MatchRule)
 	i := len(*matches) - 1
 	(*matches)[i].Meta[C.GoString(identifier)] = C.GoString(value)
 }
 
 //export addMetaBool
 func addMetaBool(userData unsafe.Pointer, identifier *C.char, value C.int) {
-
-	matches := callbackData.Get(uintptr(userData)).(*[]MatchRule)
+	matches := callbackData.Get(*(*uintptr)(userData)).(*[]MatchRule)
 	i := len(*matches) - 1
 	(*matches)[i].Meta[C.GoString(identifier)] = bool(value != 0)
 }
 
 //export addTag
 func addTag(userData unsafe.Pointer, tag *C.char) {
-	matches := callbackData.Get(uintptr(userData)).(*[]MatchRule)
+	matches := callbackData.Get(*(*uintptr)(userData)).(*[]MatchRule)
 	i := len(*matches) - 1
 	(*matches)[i].Tags = append((*matches)[i].Tags, C.GoString(tag))
 }
 
 //export addString
 func addString(userData unsafe.Pointer, identifier *C.char, offset C.uint64_t, data unsafe.Pointer, length C.int) {
-
 	ms := MatchString{
 		Name:   C.GoString(identifier),
 		Offset: uint64(offset),
@@ -111,9 +107,8 @@ func addString(userData unsafe.Pointer, identifier *C.char, offset C.uint64_t, d
 	hdr.Len = int(length)
 	copy(ms.Data, tmpSlice)
 
-	matches := callbackData.Get(uintptr(userData)).(*[]MatchRule)
+	matches := callbackData.Get(*(*uintptr)(userData)).(*[]MatchRule)
 	i := len(*matches) - 1
-
 	(*matches)[i].Strings = append((*matches)[i].Strings, ms)
 }
 
@@ -143,10 +138,10 @@ func (r *Rules) ScanMem(buf []byte, flags ScanFlags, timeout time.Duration) (mat
 		ptr,
 		C.size_t(len(buf)),
 		C.int(flags),
-		C.YR_CALLBACK_FUNC(C.rules_callback),
-		unsafe.Pointer(id),
+		C.YR_CALLBACK_FUNC(C.stdScanCallback),
+		unsafe.Pointer(&id),
 		C.int(timeout/time.Second)))
-	r.keepAlive()
+	keepAlive(r)
 	return
 }
 
@@ -160,25 +155,25 @@ func (r *Rules) ScanFile(filename string, flags ScanFlags, timeout time.Duration
 		r.cptr,
 		cfilename,
 		C.int(flags),
-		C.YR_CALLBACK_FUNC(C.rules_callback),
-		unsafe.Pointer(id),
+		C.YR_CALLBACK_FUNC(C.stdScanCallback),
+		unsafe.Pointer(&id),
 		C.int(timeout/time.Second)))
-	r.keepAlive()
+	keepAlive(r)
 	return
 }
 
 // ScanProc scans a live process using the ruleset.
-func (r *Rules) ScanProc(pid int, flags int, timeout time.Duration) (matches []MatchRule, err error) {
+func (r *Rules) ScanProc(pid int, flags ScanFlags, timeout time.Duration) (matches []MatchRule, err error) {
 	id := callbackData.Put(&matches)
 	defer callbackData.Delete(id)
 	err = newError(C.yr_rules_scan_proc(
 		r.cptr,
 		C.int(pid),
 		C.int(flags),
-		C.YR_CALLBACK_FUNC(C.rules_callback),
-		unsafe.Pointer(id),
+		C.YR_CALLBACK_FUNC(C.stdScanCallback),
+		unsafe.Pointer(&id),
 		C.int(timeout/time.Second)))
-	r.keepAlive()
+	keepAlive(r)
 	return
 }
 
@@ -187,10 +182,9 @@ func (r *Rules) Save(filename string) (err error) {
 	cfilename := C.CString(filename)
 	defer C.free(unsafe.Pointer(cfilename))
 	err = newError(C.yr_rules_save(r.cptr, cfilename))
-	r.keepAlive()
+	keepAlive(r)
 	return
 }
-
 
 // LoadRules retrieves a compiled ruleset from filename.
 func LoadRules(filename string) (*Rules, error) {
@@ -249,6 +243,15 @@ func (r *Rules) DefineVariable(name string, value interface{}) (err error) {
 	default:
 		err = errors.New("wrong value type passed to DefineVariable; bool, int64, float64, string are accepted")
 	}
-	r.keepAlive()
+	keepAlive(r)
+	return
+}
+
+// GetRules returns a slice of rule objects that are part of the
+// ruleset
+func (r *Rules) GetRules() (rv []Rule) {
+	for p := unsafe.Pointer(r.cptr.rules_list_head); (*C.YR_RULE)(p).g_flags&C.RULE_GFLAGS_NULL == 0; p = unsafe.Pointer(uintptr(p) + unsafe.Sizeof(*r.cptr.rules_list_head)) {
+		rv = append(rv, Rule{(*C.YR_RULE)(p)})
+	}
 	return
 }
