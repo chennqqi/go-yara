@@ -1,4 +1,4 @@
-// Copyright © 2015-2017 Hilko Bengen <bengen@hilluzination.de>
+// Copyright © 2015-2019 Hilko Bengen <bengen@hilluzination.de>
 // All rights reserved.
 //
 // Use of this source code is governed by the license that can be
@@ -89,7 +89,6 @@ static void string_matches(YR_STRING* s, const YR_MATCH *matches[], int *n) {
 
 */
 import "C"
-import "unsafe"
 
 // Rule represents a single rule as part of a ruleset
 type Rule struct{ cptr *C.YR_RULE }
@@ -121,6 +120,9 @@ func (r *Rule) Tags() (tags []string) {
 
 // Metas returns a map containing the rule's meta variables. Values
 // can be of type string, int, bool, or nil.
+//
+// If a rule contains multiple meta variables with the same name, only
+// the last meta variable is returned as part of the map.
 func (r *Rule) Metas() (metas map[string]interface{}) {
 	metas = make(map[string]interface{})
 	var size C.int
@@ -131,20 +133,31 @@ func (r *Rule) Metas() (metas map[string]interface{}) {
 	mptrs := make([]*C.YR_META, int(size))
 	C.rule_metas(r.cptr, &mptrs[0], &size)
 	for _, m := range mptrs {
-		var id, str *C.char
-		C.meta_get(m, &id, &str)
+		var cid, cstr *C.char
+		C.meta_get(m, &cid, &cstr)
+		id := C.GoString(cid)
 		switch m._type {
 		case C.META_TYPE_NULL:
-			metas[C.GoString(id)] = nil
+			metas[id] = nil
 		case C.META_TYPE_STRING:
-			metas[C.GoString(id)] = C.GoString(str)
+			metas[id] = C.GoString(cstr)
 		case C.META_TYPE_INTEGER:
-			metas[C.GoString(id)] = int(m.integer)
+			metas[id] = int(m.integer)
 		case C.META_TYPE_BOOLEAN:
-			metas[C.GoString(id)] = m.integer != 0
+			metas[id] = m.integer != 0
 		}
 	}
 	return
+}
+
+// IsPrivate returns true if the rule is marked as private
+func (r *Rule) IsPrivate() bool {
+	return (r.cptr.g_flags & C.RULE_GFLAGS_PRIVATE) != 0
+}
+
+// IsGlobal returns true if the rule is marked as global
+func (r *Rule) IsGlobal() bool {
+	return (r.cptr.g_flags & C.RULE_GFLAGS_GLOBAL) != 0
 }
 
 // String represents a string as part of a rule
@@ -186,11 +199,6 @@ func (s *String) Matches() (matches []Match) {
 		matches = append(matches, Match{ptr})
 	}
 	return
-}
-
-// Data returns the blob of data associated with the string match
-func (m *Match) Data() []byte {
-	return C.GoBytes(unsafe.Pointer(m.cptr.data), C.int(m.cptr.data_length))
 }
 
 // Offset returns the offset at which the string match occurred

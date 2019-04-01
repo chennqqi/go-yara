@@ -1,4 +1,4 @@
-// Copyright © 2015-2017 Hilko Bengen <bengen@hilluzination.de>
+// Copyright © 2015-2019 Hilko Bengen <bengen@hilluzination.de>
 // All rights reserved.
 //
 // Use of this source code is governed by the license that can be
@@ -14,6 +14,7 @@ package yara
 #include <yara.h>
 
 #ifdef _WIN32
+#include <stdint.h>
 // Helper function that is merely used to cast fd from int to HANDLE.
 // CGO treats HANDLE (void*) to an unsafe.Pointer. This confuses the
 // go1.4 garbage collector, leading to runtime errors such as:
@@ -27,7 +28,7 @@ int _yr_rules_scan_fd(
     void* user_data,
     int timeout)
 {
-  return yr_rules_scan_fd(rules, (YR_FILE_DESCRIPTOR)fd, flags, callback, user_data, timeout);
+  return yr_rules_scan_fd(rules, (YR_FILE_DESCRIPTOR)(intptr_t)fd, flags, callback, user_data, timeout);
 }
 #else
 #define _yr_rules_scan_fd yr_rules_scan_fd
@@ -43,7 +44,6 @@ import (
 	"io"
 	"runtime"
 	"time"
-	"unsafe"
 )
 
 // ScanFileDescriptor scans a file using the ruleset, returning
@@ -55,20 +55,21 @@ func (r *Rules) ScanFileDescriptor(fd uintptr, flags ScanFlags, timeout time.Dur
 	return
 }
 
-// ScanFileDescriptor scans a file using the ruleset. For every event
+// ScanFileDescriptorWithCallback scans a file using the ruleset. For every event
 // emitted by libyara, the appropriate method on the ScanCallback
 // object is called.
 func (r *Rules) ScanFileDescriptorWithCallback(fd uintptr, flags ScanFlags, timeout time.Duration, cb ScanCallback) (err error) {
-	id := callbackData.Put(cb)
+	cbc := &scanCallbackContainer{ScanCallback: cb}
+	defer cbc.destroy()
+	id := callbackData.Put(cbc)
 	defer callbackData.Delete(id)
 	err = newError(C._yr_rules_scan_fd(
 		r.cptr,
 		C.int(fd),
 		C.int(flags),
 		C.YR_CALLBACK_FUNC(C.scanCallbackFunc),
-		unsafe.Pointer(&id),
+		id,
 		C.int(timeout/time.Second)))
-	keepAlive(id)
 	keepAlive(r)
 	return
 }
@@ -83,10 +84,9 @@ func (r *Rules) Write(wr io.Writer) (err error) {
 		// The complaint from go vet about possible misuse of
 		// unsafe.Pointer is wrong: user_data will be interpreted as
 		// an uintptr on the other side of the callback
-		user_data: unsafe.Pointer(id),
+		user_data: id,
 	}
 	err = newError(C.yr_rules_save_stream(r.cptr, &stream))
-	keepAlive(id)
 	keepAlive(r)
 	return
 }
@@ -101,13 +101,12 @@ func ReadRules(rd io.Reader) (*Rules, error) {
 		read: C.YR_STREAM_READ_FUNC(C.streamRead),
 		// The complaint from go vet about possible misuse of
 		// unsafe.Pointer is wrong, see above.
-		user_data: unsafe.Pointer(id),
+		user_data: id,
 	}
 	if err := newError(C.yr_rules_load_stream(&stream,
 		&(r.rules.cptr))); err != nil {
 		return nil, err
 	}
 	runtime.SetFinalizer(r.rules, (*rules).finalize)
-	keepAlive(id)
 	return r, nil
 }

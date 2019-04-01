@@ -1,4 +1,4 @@
-// Copyright © 2015-2017 Hilko Bengen <bengen@hilluzination.de>
+// Copyright © 2015-2019 Hilko Bengen <bengen@hilluzination.de>
 // All rights reserved.
 //
 // Use of this source code is governed by the license that can be
@@ -22,14 +22,13 @@ void compilerCallback(int, char*, int, char*, void*);
 import "C"
 import (
 	"errors"
-	"os"
 	"runtime"
 	"unsafe"
 )
 
 //export compilerCallback
 func compilerCallback(errorLevel C.int, filename *C.char, linenumber C.int, message *C.char, userData unsafe.Pointer) {
-	c := callbackData.Get(*(*uintptr)(userData)).(*Compiler)
+	c := callbackData.Get(userData).(*Compiler)
 	msg := CompilerMessage{
 		Filename: C.GoString(filename),
 		Line:     int(linenumber),
@@ -50,6 +49,8 @@ type Compiler struct {
 	*compiler
 	Errors   []CompilerMessage
 	Warnings []CompilerMessage
+	// used for include callback
+	callbackData unsafe.Pointer
 }
 
 type compiler struct {
@@ -80,51 +81,34 @@ func (c *compiler) finalize() {
 	runtime.SetFinalizer(c, nil)
 }
 
+func (c *Compiler) setCallbackData(ptr unsafe.Pointer) {
+	if c.callbackData != nil {
+		callbackData.Delete(c.callbackData)
+	}
+	c.callbackData = ptr
+}
+
 // Destroy destroys the YARA data structure representing a compiler.
 // Since a Finalizer for the underlying YR_COMPILER structure is
 // automatically set up on creation, it should not be necessary to
 // explicitly call this method.
 func (c *Compiler) Destroy() {
+	c.setCallbackData(nil)
 	if c.compiler != nil {
 		c.compiler.finalize()
 		c.compiler = nil
 	}
 }
 
-// AddFile compiles rules from a file. Rules are added to the
-// specified namespace.
-func (c *Compiler) AddFile(file *os.File, namespace string) (err error) {
-	fd := C.dup(C.int(file.Fd()))
-	fh, err := C.fdopen(fd, C.CString("r"))
-	if err != nil {
-		return err
-	}
-	defer C.fclose(fh)
-	var ns *C.char
-	if namespace != "" {
-		ns = C.CString(namespace)
-		defer C.free(unsafe.Pointer(ns))
-	}
-	filename := C.CString(file.Name())
-	defer C.free(unsafe.Pointer(filename))
-	id := callbackData.Put(c)
-	defer callbackData.Delete(id)
-	C.yr_compiler_set_callback(c.cptr, C.YR_COMPILER_CALLBACK_FUNC(C.compilerCallback), unsafe.Pointer(&id))
-	numErrors := int(C.yr_compiler_add_file(c.cptr, fh, ns, filename))
-	if numErrors > 0 {
-		var buf [1024]C.char
-		msg := C.GoString(C.yr_compiler_get_error_message(
-			c.cptr, (*C.char)(unsafe.Pointer(&buf[0])), 1024))
-		err = errors.New(msg)
-	}
-	keepAlive(id)
-	keepAlive(c)
-	return
-}
-
 // AddString compiles rules from a string. Rules are added to the
 // specified namespace.
+//
+// If this function returns an error, the Compiler object will become
+// unusable.
 func (c *Compiler) AddString(rules string, namespace string) (err error) {
+	if c.cptr.errors != 0 {
+		return errors.New("Compiler cannot be used after parse error")
+	}
 	var ns *C.char
 	if namespace != "" {
 		ns = C.CString(namespace)
@@ -134,7 +118,7 @@ func (c *Compiler) AddString(rules string, namespace string) (err error) {
 	defer C.free(unsafe.Pointer(crules))
 	id := callbackData.Put(c)
 	defer callbackData.Delete(id)
-	C.yr_compiler_set_callback(c.cptr, C.YR_COMPILER_CALLBACK_FUNC(C.compilerCallback), unsafe.Pointer(&id))
+	C.yr_compiler_set_callback(c.cptr, C.YR_COMPILER_CALLBACK_FUNC(C.compilerCallback), id)
 	numErrors := int(C.yr_compiler_add_string(c.cptr, crules, ns))
 	if numErrors > 0 {
 		var buf [1024]C.char
@@ -142,7 +126,6 @@ func (c *Compiler) AddString(rules string, namespace string) (err error) {
 			c.cptr, (*C.char)(unsafe.Pointer(&buf[0])), 1024))
 		err = errors.New(msg)
 	}
-	keepAlive(id)
 	keepAlive(c)
 	return
 }
@@ -181,6 +164,9 @@ func (c *Compiler) DefineVariable(identifier string, value interface{}) (err err
 
 // GetRules returns the compiled ruleset.
 func (c *Compiler) GetRules() (*Rules, error) {
+	if c.cptr.errors != 0 {
+		return nil, errors.New("Compiler cannot be used after parse error")
+	}
 	var yrRules *C.YR_RULES
 	if err := newError(C.yr_compiler_get_rules(c.cptr, &yrRules)); err != nil {
 		return nil, err
@@ -198,6 +184,7 @@ func Compile(rules string, variables map[string]interface{}) (r *Rules, err erro
 	if c, err = NewCompiler(); err != nil {
 		return
 	}
+	defer c.Destroy()
 	for k, v := range variables {
 		if err = c.DefineVariable(k, v); err != nil {
 			return
