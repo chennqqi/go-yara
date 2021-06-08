@@ -17,7 +17,7 @@ package yara
 
 #include <yara.h>
 
-void compilerCallback(int, char*, int, char*, void*);
+void compilerCallback(int, char*, int, YR_RULE*, char*, void*);
 char* includeCallback(char*, char*, char*, void*);
 void freeCallback(char*, void*);
 */
@@ -31,7 +31,7 @@ import (
 )
 
 //export compilerCallback
-func compilerCallback(errorLevel C.int, filename *C.char, linenumber C.int, message *C.char, userData unsafe.Pointer) {
+func compilerCallback(errorLevel C.int, filename *C.char, linenumber C.int, rule *C.YR_RULE, message *C.char, userData unsafe.Pointer) {
 	c := callbackData.Get(userData).(*Compiler)
 	msg := CompilerMessage{
 		Filename: C.GoString(filename),
@@ -231,21 +231,18 @@ func freeCallback(callbackResultPtr *C.char, userData unsafe.Pointer) {
 	return
 }
 
-// CompilerIncludeFunc is the type of the function that can be
-// registered through SetIncludeCallback. It is called for every
-// include statement encountered by the compiler. The argument "name"
-// specifies the rule file to be included, "filename" specifies the
-// name of the rule file where the include statement has been
-// encountered, and "namespace" specifies the rule namespace. The sole
-// return value is a byte slice containing the contents of the
-// included file. A return value of nil signals an error to the YARA
-// compiler.
+// CompilerIncludeFunc is used with Compiler.SetIncludeCallback.
+// Arguments are: name for the rule file to be included, filename for
+// the file that contains the include statement, namespace for the rule
+// namespace. The function returns a byte slice containing the
+// contents of the included file. It must return a nil return value on
+// error.
 //
 // See also: yr_compiler_set_include_callback in the YARA C API
 // documentation.
 type CompilerIncludeFunc func(name, filename, namespace string) []byte
 
-// SetIncludeCallback sets up cb as an include callback that is called
+// SetIncludeCallback registers an include function that is called
 // (through Go glue code) by the YARA compiler for every include
 // statement.
 func (c *Compiler) SetIncludeCallback(cb CompilerIncludeFunc) {
