@@ -4,25 +4,12 @@
 // Use of this source code is governed by the license that can be
 // found in the LICENSE file.
 
-// Package yara provides bindings to the YARA library.
 package yara
 
 /*
 #include <yara.h>
 
-// This function was published in the header file after YARA 3.11, see
-// https://github.com/VirusTotal/yara/pull/1244
-#if YR_MAJOR_VERSION == 3 && YR_MINOR_VERSION < 12
-YR_API int yr_rules_scan_mem_blocks(
-    YR_RULES* rules,
-    YR_MEMORY_BLOCK_ITERATOR* iterator,
-    int flags,
-    YR_CALLBACK_FUNC callback,
-    void* user_data,
-    int timeout);
-#endif
-
-int scanCallbackFunc(int, void*, void*);
+int scanCallbackFunc(YR_SCAN_CONTEXT*, int, void*, void*);
 
 uint8_t* memoryBlockFetch(YR_MEMORY_BLOCK*);
 uint8_t* memoryBlockFetchNull(YR_MEMORY_BLOCK*);
@@ -33,8 +20,6 @@ YR_MEMORY_BLOCK* memoryBlockIteratorNext(YR_MEMORY_BLOCK_ITERATOR*);
 import "C"
 import (
 	"reflect"
-	"runtime"
-	"time"
 	"unsafe"
 )
 
@@ -49,7 +34,7 @@ type MemoryBlockIterator interface {
 type memoryBlockIteratorContainer struct {
 	MemoryBlockIterator
 	// MemoryBlock holds return values of the First and Next methods
-	// as it is moved back to libyara. (FIXME: Is this needed?)
+	// as it is moved back to libyara.
 	*MemoryBlock
 	// cblock is passed to memoryBlockFetch. Its data lives in malloc
 	// memory.
@@ -69,6 +54,16 @@ func makeMemoryBlockIteratorContainer(mbi MemoryBlockIterator) (c *memoryBlockIt
 	hdr := (*reflect.SliceHeader)(unsafe.Pointer(&c.buf))
 	hdr.Data = 0
 	return
+}
+
+// The caller is responsible to remove cmbi.context from callbackData
+// pool.
+func makeCMemoryBlockIterator(c *memoryBlockIteratorContainer) (cmbi *C.YR_MEMORY_BLOCK_ITERATOR) {
+	return &C.YR_MEMORY_BLOCK_ITERATOR{
+		context: callbackData.Put(c),
+		first:   C.YR_MEMORY_BLOCK_ITERATOR_FUNC(C.memoryBlockIteratorFirst),
+		next:    C.YR_MEMORY_BLOCK_ITERATOR_FUNC(C.memoryBlockIteratorNext),
+	}
 }
 
 func (c *memoryBlockIteratorContainer) realloc(size int) {
@@ -99,6 +94,9 @@ type MemoryBlock struct {
 	FetchData func([]byte)
 }
 
+// memoryBlockFetch is used as YR_MEMORY_BLOCK.fetch_data.
+// It is called from YARA code.
+//
 //export memoryBlockFetch
 func memoryBlockFetch(cblock *C.YR_MEMORY_BLOCK) *C.uint8_t {
 	c := callbackData.Get(cblock.context).(*memoryBlockIteratorContainer)
@@ -107,6 +105,9 @@ func memoryBlockFetch(cblock *C.YR_MEMORY_BLOCK) *C.uint8_t {
 	return (*C.uint8_t)(unsafe.Pointer(&c.buf[0]))
 }
 
+// memoryBlockFetchNull is used as YR_MEMORY_BLOCK.fetch_data for empty blocks.
+// It is called from YARA code.
+//
 //export memoryBlockFetchNull
 func memoryBlockFetchNull(*C.YR_MEMORY_BLOCK) *C.uint8_t { return nil }
 
@@ -128,6 +129,9 @@ func memoryBlockIteratorCommon(cmbi *C.YR_MEMORY_BLOCK_ITERATOR, c *memoryBlockI
 	return
 }
 
+// memoryBlockIteratorFirst is used as YR_MEMORY_BLOCK_ITERATOR.first.
+// It is called from YARA code.
+//
 //export memoryBlockIteratorFirst
 func memoryBlockIteratorFirst(cmbi *C.YR_MEMORY_BLOCK_ITERATOR) *C.YR_MEMORY_BLOCK {
 	c := callbackData.Get(cmbi.context).(*memoryBlockIteratorContainer)
@@ -135,70 +139,12 @@ func memoryBlockIteratorFirst(cmbi *C.YR_MEMORY_BLOCK_ITERATOR) *C.YR_MEMORY_BLO
 	return memoryBlockIteratorCommon(cmbi, c)
 }
 
+// memoryBlockIteratorNext is used as YR_MEMORY_BLOCK_ITERATOR.next.
+// It is called from YARA code.
+//
 //export memoryBlockIteratorNext
 func memoryBlockIteratorNext(cmbi *C.YR_MEMORY_BLOCK_ITERATOR) *C.YR_MEMORY_BLOCK {
 	c := callbackData.Get(cmbi.context).(*memoryBlockIteratorContainer)
 	c.MemoryBlock = c.MemoryBlockIterator.Next()
 	return memoryBlockIteratorCommon(cmbi, c)
-}
-
-// ScahMemBlocks scans over a MemoryBlockIterator using the ruleset,
-// returning matches via a list of MatchRule objects..
-func (r *Rules) ScanMemBlocks(mbi MemoryBlockIterator, flags ScanFlags, timeout time.Duration) (matches []MatchRule, err error) {
-	cb := MatchRules{}
-	err = r.ScanMemBlocksWithCallback(mbi, flags, timeout, &cb)
-	matches = cb
-	return
-}
-
-// ScanMemBlocksWithCallback scans over a MemoryBlockIterator using
-// the ruleset. For every event emitted by libyara, the appropriate
-// method on the ScanCallback object is called.
-func (r *Rules) ScanMemBlocksWithCallback(mbi MemoryBlockIterator, flags ScanFlags, timeout time.Duration, cb ScanCallback) (err error) {
-	c := makeMemoryBlockIteratorContainer(mbi)
-	defer c.free()
-	cmbi := &C.YR_MEMORY_BLOCK_ITERATOR{
-		context: callbackData.Put(c),
-		first:   C.YR_MEMORY_BLOCK_ITERATOR_FUNC(C.memoryBlockIteratorFirst),
-		next:    C.YR_MEMORY_BLOCK_ITERATOR_FUNC(C.memoryBlockIteratorNext),
-	}
-	defer callbackData.Delete(cmbi.context)
-	id := callbackData.Put(makeScanCallbackContainer(cb))
-	defer callbackData.Delete(id)
-	err = newError(C.yr_rules_scan_mem_blocks(
-		r.cptr,
-		cmbi,
-		C.int(flags),
-		C.YR_CALLBACK_FUNC(C.scanCallbackFunc),
-		id,
-		C.int(timeout/time.Second)))
-	runtime.KeepAlive(r)
-	return
-}
-
-// ScahMemBlocks scans over a MemoryBlockIterator using the scanner.
-//
-// If a callback object has been set for the scanner using
-// SetCAllback, matches is nil and the callback object is used instead
-// to collect scan events.
-func (s *Scanner) ScanMemBlocks(mbi MemoryBlockIterator, cb ScanCallback) (matches []MatchRule, err error) {
-	c := makeMemoryBlockIteratorContainer(mbi)
-	defer c.free()
-
-	cmbi := &C.YR_MEMORY_BLOCK_ITERATOR{
-		context: callbackData.Put(c),
-		first:   C.YR_MEMORY_BLOCK_ITERATOR_FUNC(C.memoryBlockIteratorFirst),
-		next:    C.YR_MEMORY_BLOCK_ITERATOR_FUNC(C.memoryBlockIteratorNext),
-	}
-	defer callbackData.Delete(cmbi.context)
-
-	cbPtr := s.putCallbackData(&matches)
-	defer callbackData.Delete(cbPtr)
-
-	err = newError(C.yr_scanner_scan_mem_blocks(
-		s.cptr,
-		cmbi,
-	))
-	runtime.KeepAlive(s)
-	return
 }

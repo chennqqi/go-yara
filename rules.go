@@ -1,10 +1,9 @@
-// Copyright © 2015-2019 Hilko Bengen <bengen@hilluzination.de>
+// Copyright © 2015-2020 Hilko Bengen <bengen@hilluzination.de>
 // All rights reserved.
 //
 // Use of this source code is governed by the license that can be
 // found in the LICENSE file.
 
-// Package yara provides bindings to the YARA library.
 package yara
 
 /*
@@ -34,7 +33,7 @@ int _yr_rules_scan_fd(
 size_t streamRead(void* ptr, size_t size, size_t nmemb, void* user_data);
 size_t streamWrite(void* ptr, size_t size, size_t nmemb, void* user_data);
 
-int scanCallbackFunc(int, void*, void*);
+int scanCallbackFunc(YR_SCAN_CONTEXT*, int, void*, void*);
 */
 import "C"
 import (
@@ -51,15 +50,13 @@ import (
 // may be automatically freed, it should not be copied.
 type Rules struct{ cptr *C.YR_RULES }
 
-var dummy *[]MatchRule
-
 // A MatchRule represents a rule successfully matched against a block
 // of data.
 type MatchRule struct {
 	Rule      string
 	Namespace string
 	Tags      []string
-	Meta      map[string]interface{}
+	Metas     []Meta
 	Strings   []MatchString
 }
 
@@ -84,31 +81,29 @@ const (
 	ScanFlagsProcessMemory = C.SCAN_FLAGS_PROCESS_MEMORY
 )
 
-// ScanMem scans an in-memory buffer using the ruleset, returning
-// matches via a list of MatchRule objects.
-func (r *Rules) ScanMem(buf []byte, flags ScanFlags, timeout time.Duration) (matches []MatchRule, err error) {
-	cb := MatchRules{}
-	err = r.ScanMemWithCallback(buf, flags, timeout, &cb)
-	matches = cb
+func (sf ScanFlags) withReportFlags(sc ScanCallback) (i C.int) {
+	i = C.int(sf) | C.SCAN_FLAGS_REPORT_RULES_MATCHING
+	if _, ok := sc.(ScanCallbackNoMatch); ok {
+		i |= C.SCAN_FLAGS_REPORT_RULES_NOT_MATCHING
+	}
 	return
 }
 
-// ScanMemWithCallback scans an in-memory buffer using the ruleset.
-// For every event emitted by libyara, the appropriate method on the
+// ScanMem scans an in-memory buffer using the ruleset.
+// For every event emitted by libyara, the corresponding method on the
 // ScanCallback object is called.
-func (r *Rules) ScanMemWithCallback(buf []byte, flags ScanFlags, timeout time.Duration, cb ScanCallback) (err error) {
+func (r *Rules) ScanMem(buf []byte, flags ScanFlags, timeout time.Duration, cb ScanCallback) (err error) {
 	var ptr *C.uint8_t
 	if len(buf) > 0 {
 		ptr = (*C.uint8_t)(unsafe.Pointer(&(buf[0])))
 	}
-	cbc := makeScanCallbackContainer(cb)
-	id := callbackData.Put(cbc)
+	id := callbackData.Put(makeScanCallbackContainer(cb, r))
 	defer callbackData.Delete(id)
 	err = newError(C.yr_rules_scan_mem(
 		r.cptr,
 		ptr,
 		C.size_t(len(buf)),
-		C.int(flags),
+		flags.withReportFlags(cb),
 		C.YR_CALLBACK_FUNC(C.scanCallbackFunc),
 		id,
 		C.int(timeout/time.Second)))
@@ -116,27 +111,18 @@ func (r *Rules) ScanMemWithCallback(buf []byte, flags ScanFlags, timeout time.Du
 	return
 }
 
-// ScanFile scans a file using the ruleset, returning matches via a
-// list of MatchRule objects.
-func (r *Rules) ScanFile(filename string, flags ScanFlags, timeout time.Duration) (matches []MatchRule, err error) {
-	cb := MatchRules{}
-	err = r.ScanFileWithCallback(filename, flags, timeout, &cb)
-	matches = cb
-	return
-}
-
-// ScanFileWithCallback scans a file using the ruleset. For every
-// event emitted by libyara, the appropriate method on the
+// ScanFile scans a file using the ruleset. For every
+// event emitted by libyara, the corresponding method on the
 // ScanCallback object is called.
-func (r *Rules) ScanFileWithCallback(filename string, flags ScanFlags, timeout time.Duration, cb ScanCallback) (err error) {
+func (r *Rules) ScanFile(filename string, flags ScanFlags, timeout time.Duration, cb ScanCallback) (err error) {
 	cfilename := C.CString(filename)
 	defer C.free(unsafe.Pointer(cfilename))
-	id := callbackData.Put(makeScanCallbackContainer(cb))
+	id := callbackData.Put(makeScanCallbackContainer(cb, r))
 	defer callbackData.Delete(id)
 	err = newError(C.yr_rules_scan_file(
 		r.cptr,
 		cfilename,
-		C.int(flags),
+		flags.withReportFlags(cb),
 		C.YR_CALLBACK_FUNC(C.scanCallbackFunc),
 		id,
 		C.int(timeout/time.Second)))
@@ -144,25 +130,16 @@ func (r *Rules) ScanFileWithCallback(filename string, flags ScanFlags, timeout t
 	return
 }
 
-// ScanFileDescriptor scans a file using the ruleset, returning
-// matches via a list of MatchRule objects.
-func (r *Rules) ScanFileDescriptor(fd uintptr, flags ScanFlags, timeout time.Duration) (matches []MatchRule, err error) {
-	cb := MatchRules{}
-	err = r.ScanFileDescriptorWithCallback(fd, flags, timeout, &cb)
-	matches = cb
-	return
-}
-
-// ScanFileDescriptorWithCallback scans a file using the ruleset. For every event
-// emitted by libyara, the appropriate method on the ScanCallback
+// ScanFileDescriptor scans a file using the ruleset. For every event
+// emitted by libyara, the corresponding method on the ScanCallback
 // object is called.
-func (r *Rules) ScanFileDescriptorWithCallback(fd uintptr, flags ScanFlags, timeout time.Duration, cb ScanCallback) (err error) {
-	id := callbackData.Put(makeScanCallbackContainer(cb))
+func (r *Rules) ScanFileDescriptor(fd uintptr, flags ScanFlags, timeout time.Duration, cb ScanCallback) (err error) {
+	id := callbackData.Put(makeScanCallbackContainer(cb, r))
 	defer callbackData.Delete(id)
 	err = newError(C._yr_rules_scan_fd(
 		r.cptr,
 		C.int(fd),
-		C.int(flags),
+		flags.withReportFlags(cb),
 		C.YR_CALLBACK_FUNC(C.scanCallbackFunc),
 		id,
 		C.int(timeout/time.Second)))
@@ -170,25 +147,37 @@ func (r *Rules) ScanFileDescriptorWithCallback(fd uintptr, flags ScanFlags, time
 	return
 }
 
-// ScanProc scans a live process using the ruleset, returning matches
-// via a list of MatchRule objects.
-func (r *Rules) ScanProc(pid int, flags ScanFlags, timeout time.Duration) (matches []MatchRule, err error) {
-	cb := MatchRules{}
-	err = r.ScanProcWithCallback(pid, flags, timeout, &cb)
-	matches = cb
-	return
-}
-
-// ScanProcWithCallback scans a live process using the ruleset.  For
-// every event emitted by libyara, the appropriate method on the
+// ScanProc scans a live process using the ruleset.  For
+// every event emitted by libyara, the corresponding method on the
 // ScanCallback object is called.
-func (r *Rules) ScanProcWithCallback(pid int, flags ScanFlags, timeout time.Duration, cb ScanCallback) (err error) {
-	id := callbackData.Put(makeScanCallbackContainer(cb))
+func (r *Rules) ScanProc(pid int, flags ScanFlags, timeout time.Duration, cb ScanCallback) (err error) {
+	id := callbackData.Put(makeScanCallbackContainer(cb, r))
 	defer callbackData.Delete(id)
 	err = newError(C.yr_rules_scan_proc(
 		r.cptr,
 		C.int(pid),
-		C.int(flags),
+		flags.withReportFlags(cb),
+		C.YR_CALLBACK_FUNC(C.scanCallbackFunc),
+		id,
+		C.int(timeout/time.Second)))
+	runtime.KeepAlive(r)
+	return
+}
+
+// ScanMemBlocks scans over a MemoryBlockIterator using the ruleset.
+// For every event emitted by libyara, the corresponding method on the
+// ScanCallback object is called.
+func (r *Rules) ScanMemBlocks(mbi MemoryBlockIterator, flags ScanFlags, timeout time.Duration, cb ScanCallback) (err error) {
+	c := makeMemoryBlockIteratorContainer(mbi)
+	defer c.free()
+	cmbi := makeCMemoryBlockIterator(c)
+	defer callbackData.Delete(cmbi.context)
+	id := callbackData.Put(makeScanCallbackContainer(cb, r))
+	defer callbackData.Delete(id)
+	err = newError(C.yr_rules_scan_mem_blocks(
+		r.cptr,
+		cmbi,
+		flags.withReportFlags(cb),
 		C.YR_CALLBACK_FUNC(C.scanCallbackFunc),
 		id,
 		C.int(timeout/time.Second)))
@@ -293,19 +282,5 @@ func (r *Rules) DefineVariable(identifier string, value interface{}) (err error)
 		err = errors.New("wrong value type passed to DefineVariable; bool, int64, float64, string are accepted")
 	}
 	runtime.KeepAlive(r)
-	return
-}
-
-// GetRules returns a slice of rule objects that are part of the
-// ruleset.
-func (r *Rules) GetRules() (rv []Rule) {
-	// Equivalent to:
-	// #define yr_rules_foreach(rules, rule) \
-	//     for (rule = rules->rules_list_head; !RULE_IS_NULL(rule); rule++)
-	// #define RULE_IS_NULL(x) \
-	//     (((x)->g_flags) & RULE_GFLAGS_NULL)
-	for p := r.cptr.rules_list_head; p.g_flags&C.RULE_GFLAGS_NULL == 0; p = (*C.YR_RULE)(unsafe.Pointer(uintptr(unsafe.Pointer(p)) + unsafe.Sizeof(*p))) {
-		rv = append(rv, Rule{p})
-	}
 	return
 }
