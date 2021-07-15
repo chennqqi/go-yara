@@ -13,7 +13,6 @@ package yara
 #endif
 #include <stdio.h>
 #include <unistd.h>
-#cgo CFLAGS:  -Iyara/libyara/include
 
 #include <yara.h>
 
